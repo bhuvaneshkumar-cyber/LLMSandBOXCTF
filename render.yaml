@@ -11,25 +11,25 @@ services:
     envVars:
       # LLM provider — set one of the two key pairs below
       - key: LLM_PROVIDER
-        value: "openrouter"          # "openrouter" (recommended) or "gemini"
+        value: "openrouter" # "openrouter" (recommended) or "gemini"
       - key: OPENROUTER_API_KEY
-        sync: false                  # Set manually in the Render dashboard
+        sync: false # Set manually in the Render dashboard
       - key: OPENROUTER_MODEL
         value: "meta-llama/llama-3.3-70b-instruct:free"
       - key: GEMINI_API_KEY
-        sync: false                  # Only needed if LLM_PROVIDER=gemini
+        sync: false # Only needed if LLM_PROVIDER=gemini
       - key: GEMINI_MODEL
         value: "gemini-3.5-flash"
 
       # Security
       - key: SECRET_KEY
-        generateValue: true          # Render generates a random value on first deploy
+        generateValue: true # Render generates a random value on first deploy
       - key: ADMIN_API_KEY
         generateValue: true
 
       # CORS — tighten to your actual frontend URL before going live
       - key: CORS_ORIGINS
-        value: "https://challenge.gdgvitchennai.com,http://localhost:3000,http://localhost:8000,null"
+        value: "https://llmsandboxctf.onrender.com,http://localhost:3000,http://localhost:8000,null"
 
       # Database — SQLite on ephemeral disk (fine for a single-day event).
       # For durable storage switch to a Render Postgres URL.
@@ -55,4 +55,3 @@ services:
     # Allow connections only from within the same Render private network.
     # Remove this list (or add 0.0.0.0/0) only if you need external access.
     ipAllowList: []
-
