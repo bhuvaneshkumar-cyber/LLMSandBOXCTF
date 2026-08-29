@@ -186,6 +186,23 @@ app.include_router(admin_router, prefix="/api/v1", tags=["admin"])
 
 
 @app.get(
+    "/",
+    tags=["health"],
+    summary="Root Endpoint",
+    response_description="Welcome message",
+)
+async def root() -> dict:
+    """
+    Root endpoint.
+    """
+    return {
+        "message": "LLM Sandbox API is running",
+        "docs": "/docs",
+        "health": "/health",
+    }
+
+
+@app.get(
     "/health",
     tags=["health"],
     summary="Liveness probe",

@@ -54,17 +54,16 @@ class Settings(BaseSettings):
     # ------------------------------------------------------------------
     # LLM providers
     # ------------------------------------------------------------------
-    # Primary provider — one of: "gemini" | "openai" | "anthropic"
+    # Primary provider — one of: "gemini" | "openrouter"
     LLM_PROVIDER: str = "gemini"
 
     GEMINI_API_KEY: str = ""
-    GEMINI_MODEL: str = "gemini-1.5-flash"
+    GEMINI_MODEL: str = "gemini-3.5-flash"
 
-    OPENAI_API_KEY: str = ""
-    OPENAI_MODEL: str = "gpt-4o-mini"
-
-    ANTHROPIC_API_KEY: str = ""
-    ANTHROPIC_MODEL: str = "claude-3-haiku-20240307"
+    # OpenRouter — OpenAI-compatible gateway to hundreds of models.
+    # Get your key at https://openrouter.ai/keys
+    OPENROUTER_API_KEY: str = ""
+    OPENROUTER_MODEL: str = "meta-llama/llama-3.3-70b-instruct:free"
 
     # ------------------------------------------------------------------
     # Security
@@ -76,7 +75,7 @@ class Settings(BaseSettings):
     # CORS — comma-separated list of allowed origins.
     # Tighten this before running the event: replace * with your frontend URL(s).
     # Example: CORS_ORIGINS="https://challenge.gdgvitchennai.com,http://localhost:3000"
-    CORS_ORIGINS: str = "http://localhost:3000,http://localhost:5173"
+    CORS_ORIGINS: str = "http://localhost:3000,http://localhost:5173,http://localhost:8000,null"
 
     # Global IP-based rate limit string for the /chat endpoint (slowapi format).
     # Syntax: "<count>/<period>"  e.g. "60/minute", "200/hour"

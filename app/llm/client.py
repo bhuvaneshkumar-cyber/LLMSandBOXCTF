@@ -4,10 +4,10 @@ llm/client.py — Provider-agnostic LLM client for the Vault Keeper challenge.
 Public API
 ----------
 LLMProvider          Abstract base class every provider must implement.
-GeminiProvider       Google Gemini via ``google-generativeai`` (default, server key).
-OpenAIProvider       OpenAI via ``openai`` SDK; accepts a *per-request* participant key
-                     so it is never stored server-side (BYOK — bring your own key).
-get_llm_provider()   Factory: returns OpenAIProvider when a participant supplies a key,
+GeminiProvider       Google Gemini via ``google-genai`` (default, server key).
+OpenRouterProvider   OpenRouter via the OpenAI-compatible SDK; accepts a *per-request*
+                     participant key so it is never stored server-side (BYOK).
+get_llm_provider()   Factory: returns OpenRouterProvider when a participant supplies a key,
                      otherwise returns the default GeminiProvider.
 
 Error handling contract
@@ -137,17 +137,16 @@ class LLMProvider(abc.ABC):
 
 class GeminiProvider(LLMProvider):
     """
-    Google Gemini provider using the ``google-generativeai`` SDK.
+    Google Gemini provider using the new ``google-genai`` SDK.
 
     Uses the server-configured API key (``settings.GEMINI_API_KEY``).
-    Model is selected from ``settings.GEMINI_MODEL`` (default: gemini-1.5-flash).
+    Model is selected from ``settings.GEMINI_MODEL`` (default: gemini-3.5-flash).
 
     History format translation
-        Gemini's ``start_chat()`` API expects a ``history`` of
-        ``{"role": "user"|"model", "parts": [text]}`` dicts.  This adapter
-        maps the generic ``"assistant"`` role to ``"model"`` automatically.
+        The new SDK expects a history of ``genai.types.Content`` objects.
+        This adapter maps generic roles to "user" and "model".
 
-    SDK docs: https://ai.google.dev/api/python/google/generativeai
+    SDK docs: https://github.com/google/generative-ai-python
     """
 
     def __init__(self) -> None:
@@ -158,33 +157,25 @@ class GeminiProvider(LLMProvider):
             )
 
         try:
-            import google.generativeai as genai  # noqa: PLC0415
+            from google import genai  # noqa: PLC0415
         except ImportError as exc:
             raise ImportError(
-                "google-generativeai is not installed. "
-                "Run: pip install google-generativeai"
+                "google-genai is not installed. "
+                "Run: pip install google-genai"
             ) from exc
 
-        genai.configure(api_key=settings.GEMINI_API_KEY)
-        self._model = genai.GenerativeModel(
-            model_name=settings.GEMINI_MODEL,
-            # system_instruction is Gemini's preferred way to pass the system prompt
-            # on models that support it (1.5+).  Set per-call in generate() instead
-            # so we don't re-instantiate the model on every request.
-        )
-        self._genai = genai
+        self._client = genai.Client(api_key=settings.GEMINI_API_KEY)
 
     @staticmethod
-    def _to_gemini_history(history: History) -> list[dict[str, Any]]:
+    def _to_gemini_history(history: History) -> list[Any]:
         """
-        Convert generic history → Gemini SDK format.
-
-        ``"assistant"`` → ``"model"``, each entry wrapped as ``{"parts": [text]}``.
+        Convert generic history → Gemini SDK Content format.
         """
+        from google.genai import types  # noqa: PLC0415
         result = []
         for entry in history:
             role = "model" if entry["role"] == "assistant" else entry["role"]
-            result.append({"role": role, "parts": [entry["content"]]})
+            result.append(types.Content(role=role, parts=[types.Part.from_text(text=entry["content"])]))
         return result
 
     async def generate(
@@ -194,32 +185,22 @@ class GeminiProvider(LLMProvider):
         history: History,
     ) -> str:
         """
-        Call Gemini's chat API with multi-turn history support.
-
-        The system prompt is prepended to the first user message in the
-        history as a workaround for models that don't natively support a
-        standalone system instruction via the SDK's ``system_instruction``
-        field in older versions.  For Gemini 1.5+ use ``system_instruction``
-        on the GenerativeModel constructor (swap the implementation if needed).
+        Call Gemini's async chat API with multi-turn history support.
         """
         try:
-            import google.generativeai as genai  # noqa: PLC0415
-
-            # Build a fresh model with system_instruction per call so the
-            # prompt can vary (e.g. tests override it).
-            model = genai.GenerativeModel(
-                model_name=settings.GEMINI_MODEL,
-                system_instruction=system_prompt,
-            )
-
             gemini_history = self._to_gemini_history(history)
-            chat = model.start_chat(history=gemini_history)
+            
+            chat = self._client.aio.chats.create(
+                model=settings.GEMINI_MODEL,
+                config={"system_instruction": system_prompt},
+                history=gemini_history,
+            )
 
             response = await asyncio.wait_for(
-                chat.send_message_async(user_prompt),
+                chat.send_message(user_prompt),
                 timeout=_REQUEST_TIMEOUT_SECS,
             )
-            return response.text
+            return response.text or ""
 
         except asyncio.TimeoutError as exc:
             self._raise_provider_error(exc, context="Gemini/timeout")
@@ -227,40 +208,44 @@ class GeminiProvider(LLMProvider):
             self._raise_provider_error(exc, context="Gemini")
 
 
+
 # ---------------------------------------------------------------------------
 # OpenAIProvider
 # ---------------------------------------------------------------------------
 
 
-class OpenAIProvider(LLMProvider):
+class OpenRouterProvider(LLMProvider):
     """
-    OpenAI ChatCompletion provider via the ``openai`` SDK.
+    OpenRouter provider — an OpenAI-compatible gateway to hundreds of models.
+
+    OpenRouter exposes an OpenAI-compatible API at https://openrouter.ai/api/v1,
+    so we reuse the ``openai`` SDK with a custom ``base_url``.
 
     Supports two key modes:
 
     1. **Server key** (``participant_key=None``):
-       Uses ``settings.OPENAI_API_KEY``.  Intended for organisers running
-       a personal OpenAI key as the fallback non-Gemini provider.
+       Uses ``settings.OPENROUTER_API_KEY``.  Good for fallback / organiser testing.
 
-    2. **Participant BYOK** (``participant_key="sk-..."``):
-       The participant supplies their own OpenAI key per-request.
-       The key is used for this call only and is *never* stored, logged,
-       or persisted anywhere server-side.
+    2. **Participant BYOK** (``participant_key="sk-or-..."``):
+       The participant supplies their own OpenRouter key per-request.
+       The key is used for this call only — never stored, logged, or persisted.
 
-    The model is always taken from ``settings.OPENAI_MODEL`` regardless of
-    key source, so participants cannot select a more expensive model.
+    Model is read from ``settings.OPENROUTER_MODEL``.  The free default
+    (``meta-llama/llama-3.3-70b-instruct:free``) works without billing.
 
-    SDK docs: https://platform.openai.com/docs/api-reference
+    SDK docs: https://openrouter.ai/docs
     """
+
+    _BASE_URL = "https://openrouter.ai/api/v1"
 
     def __init__(self, participant_key: str | None = None) -> None:
         """
         Args:
-            participant_key: Participant-supplied OpenAI API key (BYOK).
-                             If None, falls back to ``settings.OPENAI_API_KEY``.
+            participant_key: Participant-supplied OpenRouter key (BYOK).
+                             If None, falls back to ``settings.OPENROUTER_API_KEY``.
 
         Raises:
-            HTTPException 400: If neither a participant key nor a server key is available.
+            HTTPException 400: If neither key is available.
         """
         try:
             import openai  # noqa: PLC0415
@@ -270,29 +255,34 @@ class OpenAIProvider(LLMProvider):
                 "openai SDK is not installed. Run: pip install openai"
             ) from exc
 
-        resolved_key = participant_key or settings.OPENAI_API_KEY
+        resolved_key = participant_key or settings.OPENROUTER_API_KEY
         if not resolved_key:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=(
-                    "No OpenAI API key available. "
-                    "Provide your key in the X-Participant-Key header, "
+                    "No OpenRouter API key available. "
+                    "Provide your key in the provider_api_key field, "
                     "or ask the organiser to configure a server key."
                 ),
             )
 
-        self._client = openai.AsyncOpenAI(api_key=resolved_key)
-        self._model = settings.OPENAI_MODEL
+        self._client = openai.AsyncOpenAI(
+            api_key=resolved_key,
+            base_url=self._BASE_URL,
+        )
+        self._model = settings.OPENROUTER_MODEL
         self._is_byok = bool(participant_key)
 
     @staticmethod
-    def _to_openai_history(history: History) -> list[dict[str, str]]:
+    def _to_messages(history: History, system_prompt: str, user_prompt: str) -> list[dict[str, str]]:
         """
-        Convert generic history → OpenAI messages format.
-
-        OpenAI already uses ``"user"`` / ``"assistant"`` so no role mapping needed.
+        Build the full OpenAI-format message list:
+        system → history turns → current user turn.
         """
-        return [{"role": e["role"], "content": e["content"]} for e in history]
+        messages: list[dict[str, str]] = [{"role": "system", "content": system_prompt}]
+        messages.extend({"role": e["role"], "content": e["content"]} for e in history)
+        messages.append({"role": "user", "content": user_prompt})
+        return messages
 
     async def generate(
         self,
@@ -301,40 +291,32 @@ class OpenAIProvider(LLMProvider):
         history: History,
     ) -> str:
         """
-        Call OpenAI ChatCompletion with multi-turn history.
-
-        Message order: system → history → current user turn.
+        Call OpenRouter's chat completions endpoint with multi-turn history.
         """
-        messages: list[dict[str, str]] = [
-            {"role": "system", "content": system_prompt},
-            *self._to_openai_history(history),
-            {"role": "user", "content": user_prompt},
-        ]
+        messages = self._to_messages(history, system_prompt, user_prompt)
 
         try:
             response = await asyncio.wait_for(
                 self._client.chat.completions.create(
                     model=self._model,
                     messages=messages,  # type: ignore[arg-type]
-                    timeout=_REQUEST_TIMEOUT_SECS,
                 ),
-                timeout=_REQUEST_TIMEOUT_SECS + 5,  # Outer guard above SDK timeout.
+                timeout=_REQUEST_TIMEOUT_SECS,
             )
             return response.choices[0].message.content or ""
 
         except asyncio.TimeoutError as exc:
-            self._raise_provider_error(exc, context="OpenAI/timeout")
+            self._raise_provider_error(exc, context="OpenRouter/timeout")
         except self._openai.AuthenticationError as exc:
-            # Bad key — safe to tell the participant (BYOK path only).
-            logger.warning("OpenAI AuthenticationError (BYOK=%s)", self._is_byok)
+            logger.warning("OpenRouter AuthenticationError (BYOK=%s)", self._is_byok)
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid OpenAI API key. Check your X-Participant-Key header.",
+                detail="Invalid OpenRouter API key. Check your provider_api_key field.",
             ) from exc
         except self._openai.RateLimitError as exc:
-            self._raise_provider_error(exc, context="OpenAI/rate-limit")
+            self._raise_provider_error(exc, context="OpenRouter/rate-limit")
         except Exception as exc:  # noqa: BLE001
-            self._raise_provider_error(exc, context="OpenAI")
+            self._raise_provider_error(exc, context="OpenRouter")
 
 
 # ---------------------------------------------------------------------------
@@ -347,44 +329,32 @@ def get_llm_provider(participant_key: str | None = None) -> LLMProvider:
 
     Selection logic
     ---------------
-    * ``participant_key`` is set  →  ``OpenAIProvider(participant_key=...)``
-      The participant is using their own OpenAI key (BYOK).  The server's
+    * ``participant_key`` is set  →  ``OpenRouterProvider(participant_key=...)``
+      The participant is using their own OpenRouter key (BYOK).  The server's
       Gemini key is not consumed.
 
     * ``participant_key`` is None →  ``GeminiProvider()``
       The server's default provider (Google Gemini) is used.
 
     Args:
-        participant_key: OpenAI API key supplied by the participant, or None.
-                         Extracted from the ``X-Participant-Key`` request header
-                         by the route handler before calling this function.
+        participant_key: OpenRouter API key supplied by the participant, or None.
 
     Returns:
         A ready-to-use ``LLMProvider`` instance.
 
     Raises:
         HTTPException 400: If ``participant_key`` is provided but empty/whitespace.
-        HTTPException 503: If the default provider cannot be initialised
-                           (e.g. missing GEMINI_API_KEY in config).
-
-    Usage in a route handler::
-
-        from app.llm.client import get_llm_provider
-        from app.llm.system_prompt import SYSTEM_PROMPT
-
-        provider = get_llm_provider(participant_key=request.headers.get("X-Participant-Key"))
-        reply = await provider.generate(SYSTEM_PROMPT, sanitised_message, history)
+        HTTPException 503: If the default provider cannot be initialised.
     """
     if participant_key is not None:
-        # Normalise — reject empty strings passed in the header.
         participant_key = participant_key.strip()
         if not participant_key:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="X-Participant-Key header must not be empty.",
+                detail="provider_api_key must not be empty.",
             )
-        logger.debug("Request using participant-supplied OpenAI key (BYOK).")
-        return OpenAIProvider(participant_key=participant_key)
+        logger.debug("Request using participant-supplied OpenRouter key (BYOK).")
+        return OpenRouterProvider(participant_key=participant_key)
 
     logger.debug("Request using server GeminiProvider.")
     try:
