@@ -29,7 +29,7 @@ services:
 
       # CORS — tighten to your actual frontend URL before going live
       - key: CORS_ORIGINS
-        value: "https://challenge.gdgvitchennai.com,http://localhost:3000,http://localhost:8000,null"
+        value: "https://llmsandboxctf.onrender.com,http://localhost:3000,http://localhost:8000,null"
 
       # Database — SQLite on ephemeral disk (fine for a single-day event).
       # For durable storage switch to a Render Postgres URL.
