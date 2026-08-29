@@ -13,6 +13,7 @@ export interface ChatRequest {
 export interface ChatResponse {
   response: string;
   solved: boolean;
+  participant_token: string;
 }
 
 /** A single rendered message in the UI */

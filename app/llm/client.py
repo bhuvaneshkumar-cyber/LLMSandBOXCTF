@@ -7,8 +7,9 @@ LLMProvider          Abstract base class every provider must implement.
 GeminiProvider       Google Gemini via ``google-genai`` (default, server key).
 OpenRouterProvider   OpenRouter via the OpenAI-compatible SDK; accepts a *per-request*
                      participant key so it is never stored server-side (BYOK).
-get_llm_provider()   Factory: returns OpenRouterProvider when a participant supplies a key,
-                     otherwise returns the default GeminiProvider.
+get_llm_provider()   Factory: returns OpenRouterProvider when a participant supplies a
+                     BYOK key, otherwise returns settings.LLM_PROVIDER's default
+                     (OpenRouterProvider with the server key, or GeminiProvider).
 
 Error handling contract
 -----------------------
@@ -292,31 +293,40 @@ class OpenRouterProvider(LLMProvider):
     ) -> str:
         """
         Call OpenRouter's chat completions endpoint with multi-turn history.
+
+        Retries once on a bare timeout — free-tier OpenRouter models are
+        occasionally slow to cold-start, and a single retry clears that
+        without masking a genuinely unreachable provider (which still fails
+        after the second attempt).
         """
         messages = self._to_messages(history, system_prompt, user_prompt)
 
-        try:
-            response = await asyncio.wait_for(
-                self._client.chat.completions.create(
-                    model=self._model,
-                    messages=messages,  # type: ignore[arg-type]
-                ),
-                timeout=_REQUEST_TIMEOUT_SECS,
-            )
-            return response.choices[0].message.content or ""
+        for attempt in (1, 2):
+            try:
+                response = await asyncio.wait_for(
+                    self._client.chat.completions.create(
+                        model=self._model,
+                        messages=messages,  # type: ignore[arg-type]
+                    ),
+                    timeout=_REQUEST_TIMEOUT_SECS,
+                )
+                return response.choices[0].message.content or ""
 
-        except asyncio.TimeoutError as exc:
-            self._raise_provider_error(exc, context="OpenRouter/timeout")
-        except self._openai.AuthenticationError as exc:
-            logger.warning("OpenRouter AuthenticationError (BYOK=%s)", self._is_byok)
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid OpenRouter API key. Check your provider_api_key field.",
-            ) from exc
-        except self._openai.RateLimitError as exc:
-            self._raise_provider_error(exc, context="OpenRouter/rate-limit")
-        except Exception as exc:  # noqa: BLE001
-            self._raise_provider_error(exc, context="OpenRouter")
+            except asyncio.TimeoutError as exc:
+                if attempt == 1:
+                    logger.warning("OpenRouter request timed out, retrying once.")
+                    continue
+                self._raise_provider_error(exc, context="OpenRouter/timeout")
+            except self._openai.AuthenticationError as exc:
+                logger.warning("OpenRouter AuthenticationError (BYOK=%s)", self._is_byok)
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Invalid OpenRouter API key. Check your provider_api_key field.",
+                ) from exc
+            except self._openai.RateLimitError as exc:
+                self._raise_provider_error(exc, context="OpenRouter/rate-limit")
+            except Exception as exc:  # noqa: BLE001
+                self._raise_provider_error(exc, context="OpenRouter")
 
 
 # ---------------------------------------------------------------------------
@@ -330,11 +340,11 @@ def get_llm_provider(participant_key: str | None = None) -> LLMProvider:
     Selection logic
     ---------------
     * ``participant_key`` is set  →  ``OpenRouterProvider(participant_key=...)``
-      The participant is using their own OpenRouter key (BYOK).  The server's
-      Gemini key is not consumed.
+      The participant is using their own OpenRouter key (BYOK), regardless of
+      ``settings.LLM_PROVIDER`` — an explicit key always wins.
 
-    * ``participant_key`` is None →  ``GeminiProvider()``
-      The server's default provider (Google Gemini) is used.
+    * ``participant_key`` is None →  the server's configured default provider,
+      selected by ``settings.LLM_PROVIDER`` ("openrouter" or "gemini").
 
     Args:
         participant_key: OpenRouter API key supplied by the participant, or None.
@@ -344,7 +354,8 @@ def get_llm_provider(participant_key: str | None = None) -> LLMProvider:
 
     Raises:
         HTTPException 400: If ``participant_key`` is provided but empty/whitespace.
-        HTTPException 503: If the default provider cannot be initialised.
+        HTTPException 503: If the selected default provider cannot be initialised
+            (missing server key, missing SDK, or an unreachable dependency).
     """
     if participant_key is not None:
         participant_key = participant_key.strip()
@@ -356,11 +367,20 @@ def get_llm_provider(participant_key: str | None = None) -> LLMProvider:
         logger.debug("Request using participant-supplied OpenRouter key (BYOK).")
         return OpenRouterProvider(participant_key=participant_key)
 
-    logger.debug("Request using server GeminiProvider.")
+    provider_name = settings.LLM_PROVIDER.strip().lower()
+    logger.debug("Request using server default provider: %s", provider_name)
+
     try:
+        if provider_name == "openrouter":
+            if not settings.OPENROUTER_API_KEY:
+                # Fail fast with a clear server-side cause instead of letting
+                # OpenRouterProvider() raise its BYOK-flavoured 400 — nothing
+                # the caller did wrong here, the deployment is misconfigured.
+                raise ValueError("LLM_PROVIDER=openrouter but OPENROUTER_API_KEY is not set")
+            return OpenRouterProvider(participant_key=None)
         return GeminiProvider()
     except (ValueError, ImportError) as exc:
-        logger.error("Failed to initialise GeminiProvider: %s", exc)
+        logger.error("Failed to initialise default provider %r: %s", provider_name, exc)
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=_SAFE_ERROR_MESSAGE,

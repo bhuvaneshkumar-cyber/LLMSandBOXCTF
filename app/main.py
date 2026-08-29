@@ -164,14 +164,36 @@ app.add_middleware(
     # Explicit origin allowlist — never "*" in production.
     # Edit CORS_ORIGINS in .env to add your frontend URL(s).
     allow_origins=_CORS_ORIGINS,
-    # allow_credentials=True requires explicit origins (not "*").
-    # Set to True when your frontend sends the X-Participant-Key or
-    # X-Admin-Key header with credentials=true in fetch().
-    allow_credentials=True,
+    # No cookie/session auth exists (see security.py threat model) and the
+    # frontend never sets fetch(..., {credentials: "include"}), so this
+    # stays False — True buys nothing here and just widens the CORS surface.
+    allow_credentials=False,
     allow_methods=["GET", "POST", "OPTIONS"],
-    allow_headers=["Content-Type", "X-Admin-Key", "X-Participant-Key"],
+    allow_headers=["Content-Type", "X-Admin-Key", "X-Participant-Token"],
     expose_headers=["Retry-After"],
 )
+
+# ---------------------------------------------------------------------------
+# Request body size cap — rejects oversized payloads before they reach
+# Pydantic/the LLM pipeline. Checked via Content-Length only (a request
+# without that header, e.g. chunked transfer, is not covered by this check).
+# ---------------------------------------------------------------------------
+
+
+@app.middleware("http")
+async def _limit_body_size(request: Request, call_next):  # noqa: ANN001, ANN201
+    content_length = request.headers.get("content-length")
+    if content_length is not None:
+        try:
+            too_large = int(content_length) > settings.MAX_REQUEST_BODY_BYTES
+        except ValueError:
+            too_large = False  # Malformed header — let normal parsing reject it.
+        if too_large:
+            return JSONResponse(
+                status_code=413,
+                content={"detail": "Request body too large."},
+            )
+    return await call_next(request)
 
 # ---------------------------------------------------------------------------
 # Routers

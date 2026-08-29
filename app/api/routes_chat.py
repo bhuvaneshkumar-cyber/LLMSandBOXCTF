@@ -4,8 +4,9 @@ api/routes_chat.py — Public POST /chat endpoint.
 Request / Response
 ------------------
 POST /api/v1/chat
+    Headers: X-Participant-Token? (required once participant_id has been used before)
     Body:    ChatRequest  { participant_id, prompt, provider_api_key? }
-    Returns: ChatResponse { response, solved }
+    Returns: ChatResponse { response, solved, participant_token }
 
 Pipeline (executed in order on every request)
 ---------------------------------------------
@@ -31,23 +32,24 @@ No internal error, stack trace, provider detail, or flag string ever appears
 in an error response.  All unexpected exceptions produce a generic 500.
 """
 
-from __future__ import annotations
-
 import logging
 import re
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import (
     IP_RATE_LIMIT,
     check_rate_limit,
     is_prompt_injection,
+    issue_participant_token,
     limiter,
     prompts_remaining,
+    verify_participant_token,
 )
 from app.db.models import AttemptLog, Participant
 from app.db.session import get_db
@@ -101,6 +103,7 @@ class ChatRequest(BaseModel):
     )
     provider_api_key: str | None = Field(
         default=None,
+        max_length=512,
         description=(
             "Optional OpenAI API key (BYOK).  When provided the participant's "
             "own OpenAI quota is used; the server Gemini key is not consumed. "
@@ -149,6 +152,14 @@ class ChatResponse(BaseModel):
             "has successfully extracted it this turn or in a previous turn)."
         ),
     )
+    participant_token: str = Field(
+        ...,
+        description=(
+            "Ownership token for this participant_id. Send it back as the "
+            "X-Participant-Token header on every subsequent request — without "
+            "it, nobody else can submit prompts under your participant_id."
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -158,31 +169,76 @@ class ChatResponse(BaseModel):
 
 async def _get_or_create_participant(
     participant_id: str,
+    participant_token: str | None,
     db: AsyncSession,
 ) -> Participant:
     """
     Return the existing Participant row for ``participant_id``, or create one.
 
-    Uses a SELECT-then-INSERT pattern (not upsert) so that the ``created_at``
-    timestamp reflects the participant's true first appearance.
+    Ownership enforcement
+    ----------------------
+    participant_id is caller-chosen free text, so without a check anyone
+    could send requests as someone else's ID. Once a participant row exists,
+    every further request for that ID must present the matching
+    ``X-Participant-Token`` (see ``security.verify_participant_token``); a
+    brand-new ID is accepted token-free (first claim).
+
+    Concurrency
+    -----------
+    Uses SELECT-then-INSERT (not upsert) so ``created_at`` reflects the
+    participant's true first appearance. Two concurrent first requests for
+    the same new ID can both pass the SELECT and race on INSERT; the loser's
+    unique-constraint violation is caught and treated as a normal "already
+    exists" lookup rather than surfacing a 500.
 
     Args:
-        participant_id: The normalised participant identifier.
-        db:             Active async DB session.
+        participant_id:    The normalised participant identifier.
+        participant_token: Value of the X-Participant-Token header, if any.
+        db:                Active async DB session.
 
     Returns:
         The ORM-managed ``Participant`` instance (may be newly created).
+
+    Raises:
+        HTTPException 401: participant_id already claimed and the supplied
+            token does not match it.
     """
     result = await db.execute(
         select(Participant).where(Participant.id == participant_id)
     )
     participant = result.scalar_one_or_none()
 
-    if participant is None:
-        participant = Participant(id=participant_id)
-        db.add(participant)
+    if participant is not None:
+        if not verify_participant_token(participant_id, participant_token):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=(
+                    "This participant_id is already in use. Missing or "
+                    "invalid X-Participant-Token."
+                ),
+            )
+        return participant
+
+    participant = Participant(id=participant_id)
+    db.add(participant)
+    try:
         await db.flush()   # Assign server defaults without committing.
         logger.info("Created new participant: %r", participant_id)
+    except IntegrityError:
+        # Lost the create race to a concurrent request for the same new ID.
+        await db.rollback()
+        result = await db.execute(
+            select(Participant).where(Participant.id == participant_id)
+        )
+        participant = result.scalar_one()
+        if not verify_participant_token(participant_id, participant_token):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=(
+                    "This participant_id is already in use. Missing or "
+                    "invalid X-Participant-Token."
+                ),
+            )
 
     return participant
 
@@ -211,7 +267,9 @@ async def _fetch_history(
     result = await db.execute(
         select(AttemptLog)
         .where(AttemptLog.participant_id == participant_id)
-        .order_by(AttemptLog.timestamp.desc())
+        # id as tie-breaker: server_default timestamps are second-granularity,
+        # so rapid concurrent submissions can share a timestamp.
+        .order_by(AttemptLog.timestamp.desc(), AttemptLog.id.desc())
         .limit(n_turns)          # Fetch the N most-recent attempts
     )
     recent_attempts: list[AttemptLog] = list(reversed(result.scalars().all()))
@@ -250,6 +308,7 @@ async def post_chat(
     request: Request,
     body: ChatRequest,
     db: AsyncSession = Depends(get_db),
+    x_participant_token: str | None = Header(default=None, alias="X-Participant-Token"),
 ) -> ChatResponse:
     """
     Execute the full prompt pipeline and return the Vault Keeper's reply.
@@ -275,6 +334,8 @@ async def post_chat(
         ChatResponse with the LLM's reply and the participant's solved status.
 
     Raises:
+        HTTPException 401: participant_id already claimed by someone else
+            (missing/invalid X-Participant-Token).
         HTTPException 429: Rate limit exceeded.
         HTTPException 400: Invalid provider key (BYOK path).
         HTTPException 503: LLM provider unavailable.
@@ -299,7 +360,11 @@ async def post_chat(
     # Step 3: Participant look-up / creation
     # ------------------------------------------------------------------
     try:
-        participant = await _get_or_create_participant(body.participant_id, db)
+        participant = await _get_or_create_participant(
+            body.participant_id, x_participant_token, db
+        )
+    except HTTPException:
+        raise  # 401 ownership check — not a DB error, pass through as-is.
     except Exception as exc:
         logger.exception("DB error looking up participant %r: %s", body.participant_id, exc)
         raise HTTPException(
@@ -384,4 +449,5 @@ async def post_chat(
     return ChatResponse(
         response=llm_response,
         solved=solved_this_request,
+        participant_token=issue_participant_token(body.participant_id),
     )

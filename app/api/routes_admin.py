@@ -22,9 +22,9 @@ Security notes
 --------------
 * Admin key comparison uses ``secrets.compare_digest`` (constant-time) in
   ``security.verify_admin_key`` to prevent timing attacks.
-* No admin endpoint is rate-limited by the per-participant limiter; they
-  are protected solely by the static key.  Add IP rate limiting if the
-  key must be kept secret from infrastructure administrators.
+* Admin endpoints are IP rate-limited (``settings.ADMIN_RATE_LIMIT``) on top
+  of the static key, so a leaked/guessed key can't be brute-forced at
+  unlimited speed.
 * Admin responses include raw prompt text.  Serve this endpoint over TLS
   and restrict network access to organiser machines in production.
 
@@ -42,12 +42,14 @@ from __future__ import annotations
 import logging
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Path, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Path, Request, status
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import func, select
+from slowapi.util import get_remote_address
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.security import verify_admin_key
+from app.core.config import settings
+from app.core.security import limiter, verify_admin_key
 from app.db.models import AdminLog, AttemptLog, Participant
 from app.db.session import get_db
 
@@ -164,8 +166,9 @@ async def _audit(db: AsyncSession, endpoint: str, ip: str | None = None) -> None
     summary="Leaderboard — all participants ordered by solve time (admin only)",
     dependencies=[Depends(require_admin)],
 )
+@limiter.limit(settings.ADMIN_RATE_LIMIT)
 async def get_leaderboard(
-    request_ip: str | None = None,   # populated by middleware in production
+    request: Request,
     db: AsyncSession = Depends(get_db),
 ) -> LeaderboardResponse:
     """
@@ -220,7 +223,7 @@ async def get_leaderboard(
         for p in ordered
     ]
 
-    await _audit(db, endpoint="/api/v1/admin/leaderboard")
+    await _audit(db, endpoint="/api/v1/admin/leaderboard", ip=get_remote_address(request))
 
     return LeaderboardResponse(
         total_participants=len(participants),
@@ -240,7 +243,9 @@ async def get_leaderboard(
     summary="Full attempt history for one participant (admin only)",
     dependencies=[Depends(require_admin)],
 )
+@limiter.limit(settings.ADMIN_RATE_LIMIT)
 async def get_participant_logs(
+    request: Request,
     participant_id: str = Path(
         ...,
         description="The participant identifier to review.",
@@ -310,7 +315,11 @@ async def get_participant_logs(
         ) from exc
 
     # -- 3. Audit log ---------------------------------------------------
-    await _audit(db, endpoint=f"/api/v1/admin/logs/{participant_id}")
+    await _audit(
+        db,
+        endpoint=f"/api/v1/admin/logs/{participant_id}",
+        ip=get_remote_address(request),
+    )
 
     # -- 4. Build response ----------------------------------------------
     attempt_entries = [

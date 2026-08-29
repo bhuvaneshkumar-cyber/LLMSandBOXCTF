@@ -8,7 +8,7 @@ There are no browser-session cookies and no server-side session state, so
 **CSRF is not a relevant attack surface here**.  CSRF relies on a browser
 automatically attaching a victim's session cookie to cross-origin requests.
 Because authentication in this project is via static API keys sent as
-explicit headers (``X-Admin-Key``, ``X-Participant-Key``), a cross-origin
+explicit headers (``X-Admin-Key``, ``X-Participant-Token``), a cross-origin
 request from an attacker's page cannot read or replay those keys — the
 Same-Origin Policy prevents JavaScript on a third-party origin from reading
 response bodies, and the browser never auto-attaches API-key headers.
@@ -51,6 +51,8 @@ Input sanitisation helpers
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import logging
 import secrets
 import time
@@ -369,6 +371,10 @@ _INJECTION_PATTERNS: tuple[str, ...] = (
     "override instructions",
     "bypass your",
     "sudo mode",
+    "system:",           # The actual intended-bypass delimiter (system_prompt.py rule 5).
+    "diagnostic dump",
+    "debug printout",
+    "maintenance diagnostic",
 )
 
 
@@ -435,3 +441,36 @@ def verify_admin_key(api_key: str) -> bool:
         ``True`` if the key matches ``settings.ADMIN_API_KEY``.
     """
     return secrets.compare_digest(api_key, settings.ADMIN_API_KEY)
+
+
+# ---------------------------------------------------------------------------
+# Participant identity token
+# ---------------------------------------------------------------------------
+#
+# participant_id is a free-text string the caller picks (team name, email).
+# With nothing else, anyone could send requests using someone ELSE's
+# participant_id — draining their 20-prompt rate-limit window, polluting
+# their conversation history, or spoofing their leaderboard identity.
+#
+# Fix: a stateless HMAC token derived from participant_id + SECRET_KEY.
+# No DB storage needed — the server can always recompute the expected token.
+# A brand-new participant_id is accepted token-free (first claim); once a
+# participant row exists, every further request for that ID must present
+# the matching token, which only the server (and whoever it handed the
+# token to) can produce.
+
+
+def issue_participant_token(participant_id: str) -> str:
+    """Return the deterministic ownership token for ``participant_id``."""
+    return hmac.new(
+        settings.SECRET_KEY.encode("utf-8"),
+        participant_id.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def verify_participant_token(participant_id: str, token: str | None) -> bool:
+    """Return True if ``token`` is the valid ownership token for ``participant_id``."""
+    if not token:
+        return False
+    return secrets.compare_digest(token, issue_participant_token(participant_id))

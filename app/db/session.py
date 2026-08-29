@@ -26,6 +26,7 @@ from __future__ import annotations
 
 from typing import AsyncGenerator
 
+from sqlalchemy import event
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -84,7 +85,7 @@ def _build_engine() -> AsyncEngine:
         # aiosqlite / SQLite-specific: allow access from multiple async tasks.
         connect_args["check_same_thread"] = False
 
-    return create_async_engine(
+    new_engine = create_async_engine(
         settings.DATABASE_URL,
         echo=settings.DEBUG,         # Logs all SQL statements when DEBUG=true.
         future=True,
@@ -94,6 +95,22 @@ def _build_engine() -> AsyncEngine:
         # pool_size=10,
         # max_overflow=20,
     )
+
+    if is_sqlite:
+        # WAL lets readers proceed while a write is in flight (instead of
+        # blocking), and busy_timeout makes a writer that arrives during
+        # another write retry for 5s instead of failing immediately with
+        # "database is locked" — both matter once multiple participants hit
+        # the API concurrently, which the default rollback-mode SQLite
+        # connection does not handle gracefully.
+        @event.listens_for(new_engine.sync_engine, "connect")
+        def _set_sqlite_pragmas(dbapi_connection, connection_record) -> None:  # noqa: ANN001
+            cursor = dbapi_connection.cursor()
+            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.execute("PRAGMA busy_timeout=5000")
+            cursor.close()
+
+    return new_engine
 
 
 engine: AsyncEngine = _build_engine()

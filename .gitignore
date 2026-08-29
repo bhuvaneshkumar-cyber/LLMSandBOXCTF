@@ -13,8 +13,10 @@ env/
 # Environment files — never commit secrets
 .env
 
-# Database files
+# Database files (WAL mode adds -wal/-shm sidecar files alongside the .db)
 *.db
+*.db-wal
+*.db-shm
 *.sqlite3
 
 # Logs
@@ -41,3 +43,4 @@ htmlcov/
 # Frontend build artefacts
 frontend/node_modules/
 frontend/dist/
+frontend/*.tsbuildinfo

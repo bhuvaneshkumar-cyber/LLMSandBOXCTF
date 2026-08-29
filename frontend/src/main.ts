@@ -3,7 +3,12 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import "./styles.css";
-import { initParticipant, getParticipantId } from "./participant";
+import {
+  initParticipant,
+  getParticipantId,
+  getParticipantToken,
+  setParticipantToken,
+} from "./participant";
 import { sendChat } from "./api";
 import {
   setParticipantLabel,
@@ -51,7 +56,8 @@ chatForm.addEventListener("submit", async (e: Event) => {
   setLoading(true);
 
   try {
-    const result = await sendChat(getParticipantId(), text);
+    const result = await sendChat(getParticipantId(), text, getParticipantToken());
+    setParticipantToken(result.participant_token);
     appendMessage("ai", result.response);
 
     if (result.solved) {

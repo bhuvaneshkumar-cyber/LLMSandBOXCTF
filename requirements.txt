@@ -1,19 +1,17 @@
 fastapi==0.111.0
 uvicorn[standard]==0.29.0
 pydantic-settings==2.2.0
-sqlalchemy[asyncio]==2.0.0
+sqlalchemy[asyncio]==2.0.52  # 2.0.0 crashes on import on modern Python (3.11.9+/3.12.4+/3.13) — Python added __firstlineno__/__static_attributes__ to class dicts, breaking SQLAlchemy's TypingOnly check; fixed in 2.0.30+
 aiosqlite==0.20.0          # SQLite async driver — default for sandbox.db
-asyncpg==0.29.0            # Postgres async driver (no-op until DSN is switched)
+asyncpg==0.31.0            # Postgres async driver (no-op until DSN is switched); 0.29.0 has no prebuilt wheel for Python 3.13
 redis==5.0.0
 google-genai==0.5.0
 python-dotenv==1.0.0
 slowapi==0.1.9             # Rate limiting for FastAPI / Starlette
 
-# Optional — uncomment to enable BYOK via OpenRouter server-key fallback
-openai==1.50.0             # OpenAI-compatible SDK used by OpenRouterProvider
-# anthropic==0.26.0        # Removed — replaced by OpenRouter
+openai==1.50.0             # OpenAI-compatible SDK used by OpenRouterProvider (the default LLM_PROVIDER)
 
 # Dev / testing
 pytest==8.0.0
-pytest-asyncio==0.23.0
+pytest-asyncio==0.23.5     # 0.23.0 crashes under pytest 8.0.0 (Package collector hook incompatibility)
 httpx==0.27.0              # ASGI test client for FastAPI

@@ -54,8 +54,11 @@ class Settings(BaseSettings):
     # ------------------------------------------------------------------
     # LLM providers
     # ------------------------------------------------------------------
-    # Primary provider — one of: "gemini" | "openrouter"
-    LLM_PROVIDER: str = "gemini"
+    # Primary provider for requests with no participant BYOK key — one of:
+    # "openrouter" | "gemini". Default is openrouter: Gemini's free tier caps
+    # at 20 requests/day, which a live event with real participants blows
+    # through immediately; OpenRouter's free-tier models have no such cap.
+    LLM_PROVIDER: str = "openrouter"
 
     GEMINI_API_KEY: str = ""
     GEMINI_MODEL: str = "gemini-3.5-flash"
@@ -86,6 +89,15 @@ class Settings(BaseSettings):
     RATE_LIMIT_MAX_PROMPTS: int = 20
     # Window duration in seconds (default 10 minutes).
     RATE_LIMIT_WINDOW_SECONDS: int = 600
+
+    # Rate limit for /admin/* endpoints — protects ADMIN_API_KEY from brute-force
+    # guessing (secrets.compare_digest stops timing attacks, not raw retry volume).
+    ADMIN_RATE_LIMIT: str = "20/minute"
+
+    # Hard cap on request body size (bytes) enforced before Pydantic parsing.
+    # Prompts are capped at 2000 chars; this leaves headroom for JSON overhead
+    # and BYOK keys while blocking oversized-payload DoS attempts.
+    MAX_REQUEST_BODY_BYTES: int = 10_000
 
 
 # ---------------------------------------------------------------------------
