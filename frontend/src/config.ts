@@ -9,6 +9,4 @@
 //   export const BASE_URL = "https://llm-sandbox.onrender.com/api/v1";
 // ─────────────────────────────────────────────────────────────────────────────
 
-export const BASE_URL = import.meta.env.PROD 
-  ? "https://sandboxllm.onrender.com/api/v1" 
-  : "http://localhost:8000/api/v1";
+export const BASE_URL = "https://sandboxllm.onrender.com/api/v1"
