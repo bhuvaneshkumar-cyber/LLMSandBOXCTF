@@ -1,0 +1,95 @@
+"""
+core/config.py — Centralised application settings.
+
+All configuration is loaded from environment variables (or a .env file) via
+pydantic-settings.  Import the singleton `settings` object wherever config
+values are needed — never read os.environ directly in other modules.
+"""
+
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    """
+    Application-wide settings resolved from environment variables.
+
+    Precedence (highest → lowest):
+        1. Real environment variables
+        2. .env file values
+        3. Default values defined here
+    """
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+        extra="ignore",
+    )
+
+    # ------------------------------------------------------------------
+    # App metadata
+    # ------------------------------------------------------------------
+    APP_NAME: str = "LLM Sandbox"
+    APP_VERSION: str = "0.1.0"
+    DEBUG: bool = False
+
+    # ------------------------------------------------------------------
+    # Server
+    # ------------------------------------------------------------------
+    HOST: str = "0.0.0.0"
+    PORT: int = 8000
+
+    # ------------------------------------------------------------------
+    # Database
+    # ------------------------------------------------------------------
+    DATABASE_URL: str = "sqlite+aiosqlite:///./sandbox.db"
+    # To switch to Postgres, change to:
+    #   DATABASE_URL=postgresql+asyncpg://user:pass@host/sandbox
+
+    # ------------------------------------------------------------------
+    # Redis (rate limiting / caching)
+    # ------------------------------------------------------------------
+    REDIS_URL: str = "redis://localhost:6379/0"
+
+    # ------------------------------------------------------------------
+    # LLM providers
+    # ------------------------------------------------------------------
+    # Primary provider — one of: "gemini" | "openai" | "anthropic"
+    LLM_PROVIDER: str = "gemini"
+
+    GEMINI_API_KEY: str = ""
+    GEMINI_MODEL: str = "gemini-1.5-flash"
+
+    OPENAI_API_KEY: str = ""
+    OPENAI_MODEL: str = "gpt-4o-mini"
+
+    ANTHROPIC_API_KEY: str = ""
+    ANTHROPIC_MODEL: str = "claude-3-haiku-20240307"
+
+    # ------------------------------------------------------------------
+    # Security
+    # ------------------------------------------------------------------
+    SECRET_KEY: str = "change-me-in-production"
+    # API key required by the admin routes.
+    ADMIN_API_KEY: str = "change-me-in-production"
+
+    # CORS — comma-separated list of allowed origins.
+    # Tighten this before running the event: replace * with your frontend URL(s).
+    # Example: CORS_ORIGINS="https://challenge.gdgvitchennai.com,http://localhost:3000"
+    CORS_ORIGINS: str = "http://localhost:3000,http://localhost:5173"
+
+    # Global IP-based rate limit string for the /chat endpoint (slowapi format).
+    # Syntax: "<count>/<period>"  e.g. "60/minute", "200/hour"
+    IP_RATE_LIMIT: str = "60/minute"
+
+    # Per-participant rate limiting
+    # Max prompts a single participant may submit within the rolling window.
+    RATE_LIMIT_MAX_PROMPTS: int = 20
+    # Window duration in seconds (default 10 minutes).
+    RATE_LIMIT_WINDOW_SECONDS: int = 600
+
+
+# ---------------------------------------------------------------------------
+# Module-level singleton — import this everywhere.
+# ---------------------------------------------------------------------------
+settings = Settings()
