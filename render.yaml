@@ -1,21 +1,58 @@
 services:
+  # ---------------------------------------------------------------------------
+  # Web service — FastAPI backend
+  # ---------------------------------------------------------------------------
   - type: web
     name: llm-sandbox
     env: docker
     region: oregon
     plan: free
-    # The health check path for zero-downtime deploys
     healthCheckPath: /health
     envVars:
+      # LLM provider — set one of the two key pairs below
+      - key: LLM_PROVIDER
+        value: "openrouter"          # "openrouter" (recommended) or "gemini"
+      - key: OPENROUTER_API_KEY
+        sync: false                  # Set manually in the Render dashboard
+      - key: OPENROUTER_MODEL
+        value: "meta-llama/llama-3.3-70b-instruct:free"
       - key: GEMINI_API_KEY
-        sync: false
-      - key: ADMIN_KEY
+        sync: false                  # Only needed if LLM_PROVIDER=gemini
+      - key: GEMINI_MODEL
+        value: "gemini-3.5-flash"
+
+      # Security
+      - key: SECRET_KEY
+        generateValue: true          # Render generates a random value on first deploy
+      - key: ADMIN_API_KEY
         generateValue: true
+
+      # CORS — tighten to your actual frontend URL before going live
       - key: CORS_ORIGINS
-        # Update this to match your frontend domain once you know it
         value: "https://challenge.gdgvitchennai.com,http://localhost:3000,http://localhost:8000,null"
+
+      # Database — SQLite on ephemeral disk (fine for a single-day event).
+      # For durable storage switch to a Render Postgres URL.
       - key: DATABASE_URL
-        # SQLite local file path mapped to Render's ephemeral disk, OR replace with a remote postgres DB URL
         value: "sqlite+aiosqlite:///./sandbox.db"
+
+      # Redis — wired automatically from the managed Redis service below.
+      # Rate-limiter state (both slowapi IP limiter and per-participant window)
+      # is stored here so limits survive restarts and are accurate across workers.
       - key: REDIS_URL
-        value: "" # Leave blank to use in-memory fallback on the free tier
+        fromService:
+          type: redis
+          name: llm-sandbox-redis
+          property: connectionString
+
+  # ---------------------------------------------------------------------------
+  # Managed Redis — free tier (25 MB, single instance, same region)
+  # ---------------------------------------------------------------------------
+  - type: redis
+    name: llm-sandbox-redis
+    region: oregon
+    plan: free
+    # Allow connections only from within the same Render private network.
+    # Remove this list (or add 0.0.0.0/0) only if you need external access.
+    ipAllowList: []
+

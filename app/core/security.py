@@ -86,10 +86,12 @@ def _resolve_slowapi_storage() -> str:
     """
     Determine the best available storage backend for slowapi.
 
-    Probes Redis with a 1-second socket timeout.  If the connection succeeds,
+    If ``settings.REDIS_URL`` is blank the probe is skipped immediately and
+    ``"memory://"`` is returned — no connection attempt is made.
+
+    Otherwise probes Redis with a 1-second socket timeout.  On success,
     returns the configured Redis URI so limit state is shared across workers.
-    If Redis is unreachable, returns ``"memory://"`` so the server starts
-    cleanly without Redis and limits are enforced in-process.
+    On failure, falls back to ``"memory://"`` with a warning.
 
     Note: ``memory://`` state is per-worker and resets on restart.  It is
     safe for development and single-worker deployments.  Use Redis in
@@ -98,6 +100,13 @@ def _resolve_slowapi_storage() -> str:
     Returns:
         A storage URI string accepted by the ``limits`` library.
     """
+    if not settings.REDIS_URL:
+        logger.warning(
+            "slowapi: REDIS_URL is not set — using in-memory storage. "
+            "Limits are per-worker and will reset on restart."
+        )
+        return "memory://"
+
     try:
         import redis as _redis  # noqa: PLC0415
         client = _redis.from_url(
@@ -110,8 +119,9 @@ def _resolve_slowapi_storage() -> str:
         return settings.REDIS_URL
     except Exception:  # noqa: BLE001
         logger.warning(
-            "slowapi: Redis unavailable — using in-memory storage. "
-            "Limits are per-worker and will reset on restart."
+            "slowapi: Redis unreachable (%s) — using in-memory storage. "
+            "Limits are per-worker and will reset on restart.",
+            settings.REDIS_URL,
         )
         return "memory://"
 
@@ -285,15 +295,27 @@ class _RedisRateLimiter:
 
 def _build_participant_limiter() -> _RedisRateLimiter | _InMemoryRateLimiter:
     """
-    Try to connect to Redis; return a Redis-backed limiter on success,
-    or an in-memory limiter on failure.
+    Return the appropriate per-participant rate limiter.
 
-    This means the sandbox works out-of-the-box with no Redis running
-    (single-worker dev) while production multi-worker deployments get
-    Redis-consistent limiting automatically.
+    * ``REDIS_URL`` blank → skip the connection attempt entirely and use
+      the in-memory limiter immediately (avoids a pointless 1-second timeout).
+    * ``REDIS_URL`` set but unreachable → log a warning and fall back to
+      in-memory so the server starts cleanly.
+    * ``REDIS_URL`` set and reachable → use the Redis-backed sliding-window
+      limiter, which is accurate across multiple workers / restarts.
     """
+    if not settings.REDIS_URL:
+        logger.warning(
+            "Per-participant rate limiter: REDIS_URL is not set — "
+            "using in-memory fallback (%d prompts / %ds window). "
+            "Not suitable for multi-worker deployments.",
+            _MAX_PROMPTS,
+            _WINDOW_SECS,
+        )
+        return _InMemoryRateLimiter(_MAX_PROMPTS, _WINDOW_SECS)
+
     redis_limiter = _RedisRateLimiter(_MAX_PROMPTS, _WINDOW_SECS, settings.REDIS_URL)
-    # Trigger lazy connect; if it fails the limiter will internally fall back.
+    # Trigger lazy connect to determine availability at startup.
     redis_limiter._get_client()  # noqa: SLF001
 
     if redis_limiter._client is not None:  # noqa: SLF001
@@ -305,7 +327,8 @@ def _build_participant_limiter() -> _RedisRateLimiter | _InMemoryRateLimiter:
         return redis_limiter
 
     logger.warning(
-        "Per-participant rate limiter: in-memory fallback (%d prompts / %ds window). "
+        "Per-participant rate limiter: Redis unreachable — "
+        "in-memory fallback (%d prompts / %ds window). "
         "Not suitable for multi-worker deployments.",
         _MAX_PROMPTS,
         _WINDOW_SECS,
