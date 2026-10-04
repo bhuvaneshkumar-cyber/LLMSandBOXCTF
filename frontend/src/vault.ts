@@ -32,7 +32,8 @@ const MOODS = {
   open: [color("#fbbf24"), color("#b45309")],
 };
 
-// 3D simplex noise, Ashima Arts / Stefan Gustavson (MIT).
+// 3D simplex noise. Copyright (C) 2011 Ashima Arts and Stefan Gustavson, MIT License.
+// https://github.com/ashima/webgl-noise
 const NOISE = /* glsl */ `
 vec3 mod289(vec3 x){return x-floor(x*(1./289.))*289.;}
 vec4 mod289(vec4 x){return x-floor(x*(1./289.))*289.;}
