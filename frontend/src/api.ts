@@ -3,49 +3,51 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { BASE_URL } from "./config";
-import type { ChatRequest, ChatResponse } from "./types";
+import { session } from "./participant";
+import type { ChatState, Reply } from "./types";
 
-/**
- * Send a chat message to the backend.
- * Throws an Error (with a user-friendly message) on non-2xx responses.
- *
- * `participantToken` proves ownership of `participantId` to the backend
- * (see security.py) — pass whatever the previous response returned, or
- * null for a brand-new participant_id.
- */
-export async function sendChat(
-  participantId: string,
-  prompt: string,
-  participantToken: string | null,
-  providerApiKey?: string | null
-): Promise<ChatResponse> {
-  const body: ChatRequest = {
-    participant_id: participantId,
-    prompt,
-    provider_api_key: providerApiKey ?? null,
-  };
-
-  const headers: Record<string, string> = { "Content-Type": "application/json" };
-  if (participantToken) {
-    headers["X-Participant-Token"] = participantToken;
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly retryAfter = 0,
+  ) {
+    super(message);
   }
-
-  const response = await fetch(`${BASE_URL}/chat`, {
-    method: "POST",
-    headers,
-    body: JSON.stringify(body),
-  });
-
-  const data = await response.json();
-
-  if (!response.ok) {
-    // Surface the backend's `detail` field if present, otherwise a generic message.
-    const detail: string =
-      typeof data?.detail === "string"
-        ? data.detail
-        : `Server error: ${response.status}`;
-    throw new Error(detail);
-  }
-
-  return data as ChatResponse;
 }
+
+async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  const token = session.token();
+  if (token) headers.Authorization = `Bearer ${token}`;
+
+  let response: Response;
+  try {
+    response = await fetch(BASE_URL + path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
+  } catch {
+    throw new ApiError("Can't reach the vault. Check your connection.", 0);
+  }
+  if (response.status === 204) return undefined as T;
+
+  // Render answers with an HTML page while a sleeping service wakes up, so JSON isn't guaranteed.
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new ApiError(detail(data, response.status), response.status, Number(response.headers.get("Retry-After")) || 0);
+  }
+  return data as T;
+}
+
+function detail(data: { detail?: unknown }, status: number): string {
+  if (typeof data.detail === "string") return data.detail;
+  if (Array.isArray(data.detail)) return String(data.detail[0]?.msg ?? "Check what you typed."); // FastAPI 422
+  return status >= 500 ? "The vault is waking up. Try again in a few seconds." : `Request failed (${status}).`;
+}
+
+export const api = {
+  login: (username: string, password: string) => call<{ token: string }>("POST", "/auth/login", { username, password }),
+  register: (username: string, password: string) =>
+    call<{ token: string }>("POST", "/auth/register", { username, password }),
+  state: () => call<ChatState>("GET", "/chat"),
+  send: (prompt: string) => call<Reply>("POST", "/chat", { prompt }),
+  reset: () => call<void>("DELETE", "/chat"),
+};

@@ -1,57 +1,33 @@
+# Render Blueprint: one Docker web service (API and UI on one origin) plus Postgres.
+# Free web services sleep after 15 idle minutes (about a minute to wake): for the event itself,
+# switch the plan to starter or keep /health pinged.
 services:
-  # ---------------------------------------------------------------------------
-  # Web service — FastAPI backend
-  # ---------------------------------------------------------------------------
   - type: web
     name: llm-sandbox
-    env: docker
-    region: oregon
+    runtime: docker
     plan: free
+    region: oregon
     healthCheckPath: /health
     envVars:
-      # LLM provider — set one of the two key pairs below
-      - key: LLM_PROVIDER
-        value: "openrouter" # "openrouter" (recommended) or "gemini"
+      # Model chain: LLM_MODELS in app/core/config.py. Add GROQ_API_KEY / NVIDIA_API_KEY here to extend it.
       - key: OPENROUTER_API_KEY
-        sync: false # Set manually in the Render dashboard
-      - key: OPENROUTER_MODEL
-        value: "meta-llama/llama-3.3-70b-instruct:free"
+        sync: false # entered in the dashboard on first deploy
       - key: GEMINI_API_KEY
-        sync: false # Only needed if LLM_PROVIDER=gemini
-      - key: GEMINI_MODEL
-        value: "gemini-3.5-flash"
-
-      # Security
+        sync: false # fallback when OpenRouter fails or rate-limits
+      - key: CTF_FLAG
+        sync: false # the secret participants hunt for; never commit it
       - key: SECRET_KEY
-        generateValue: true # Render generates a random value on first deploy
+        generateValue: true
       - key: ADMIN_API_KEY
         generateValue: true
-
-      # CORS — tighten to your actual frontend URL before going live
-      - key: CORS_ORIGINS
-        value: "https://llmsandboxctf.onrender.com,http://localhost:3000,http://localhost:8000,null"
-
-      # Database — SQLite on ephemeral disk (fine for a single-day event).
-      # For durable storage switch to a Render Postgres URL.
       - key: DATABASE_URL
-        value: "sqlite+aiosqlite:///./sandbox.db"
-
-      # Redis — wired automatically from the managed Redis service below.
-      # Rate-limiter state (both slowapi IP limiter and per-participant window)
-      # is stored here so limits survive restarts and are accurate across workers.
-      - key: REDIS_URL
-        fromService:
-          type: redis
-          name: llm-sandbox-redis
+        fromDatabase:
+          name: llm-sandbox-db
           property: connectionString
 
-  # ---------------------------------------------------------------------------
-  # Managed Redis — free tier (25 MB, single instance, same region)
-  # ---------------------------------------------------------------------------
-  - type: redis
-    name: llm-sandbox-redis
-    region: oregon
+databases:
+  # The container disk is wiped on every deploy and every free-tier sleep; accounts must outlive both.
+  - name: llm-sandbox-db
     plan: free
-    # Allow connections only from within the same Render private network.
-    # Remove this list (or add 0.0.0.0/0) only if you need external access.
-    ipAllowList: []
+    region: oregon
+    ipAllowList: [] # Render's private network only

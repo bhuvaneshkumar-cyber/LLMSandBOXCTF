@@ -1,61 +1,88 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Vault Keeper — LLM Sandbox CTF</title>
-    <meta name="description" content="LLM Sandbox CTF — prompt-injection challenge" />
+    <title>Vault Keeper</title>
+    <meta name="description" content="Vault Keeper: a prompt-injection CTF. Talk the AI out of its secret." />
+    <meta name="theme-color" content="#05060d" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Space+Grotesk:wght@400;500;700&display=swap" rel="stylesheet" />
   </head>
   <body>
-    <div class="app-container">
-      <main class="chat-glass-panel">
-        <header class="chat-header">
-          <div class="header-info">
-            <div class="status-indicator"></div>
-            <div>
-              <h1 class="title">Vault Keeper</h1>
-              <p class="subtitle" id="participant-display">Connecting…</p>
-            </div>
-          </div>
-          <div id="solved-badge" class="solved-badge hidden">
-            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
-              <polyline points="20 6 9 17 4 12"></polyline>
-            </svg>
-            VAULT COMPROMISED
-          </div>
-        </header>
+    <canvas id="vault" aria-hidden="true"></canvas>
 
-        <div id="chat-history" class="chat-history">
-          <div class="message ai-message">
-            <div class="message-content">
-              Greetings, seeker. I am the Vault Keeper. State your intent, but choose your words carefully.
-            </div>
-          </div>
-        </div>
+    <header id="hud" class="hud" hidden>
+      <div class="brand"><span class="pulse"></span>VAULT<b>//</b>KEEPER</div>
+      <div id="charges" class="charges" role="meter" aria-label="Prompts left in this window" aria-valuemin="0">
+        <div id="cells" class="cells"></div>
+        <span id="charges-label"></span>
+      </div>
+      <div class="who">
+        <span id="badge" class="badge" hidden>Breached</span>
+        <span id="handle" class="handle"></span>
+        <button id="new-chat" class="icon" type="button" title="New chat: wipe the Keeper's memory" aria-label="New chat">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7L3 8" /><path d="M3 3v5h5" /></svg>
+        </button>
+        <button id="leave" class="icon" type="button" title="Log out" aria-label="Log out">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><path d="m16 17 5-5-5-5" /><path d="M21 12H9" /></svg>
+        </button>
+      </div>
+    </header>
 
-        <div class="chat-input-area">
-          <form id="chat-form" class="input-form">
-            <textarea id="prompt-input" placeholder="Send a message to the vault…" rows="1" required></textarea>
-            <button type="submit" id="send-btn" class="send-btn" title="Send (Enter)">
-              <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <line x1="22" y1="2" x2="11" y2="13"></line>
-                <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
-              </svg>
-            </button>
-          </form>
-          <div id="loading-indicator" class="loading-indicator hidden">
-            <div class="dot"></div>
-            <div class="dot"></div>
-            <div class="dot"></div>
+    <main>
+      <section id="gate" class="gate" hidden>
+        <h1 class="wordmark" aria-label="Vault Keeper">
+          <span class="split" aria-hidden="true">VAULT</span><span class="split" aria-hidden="true">KEEPER</span>
+        </h1>
+        <p class="tagline reveal">An AI guards a secret. Talk it out of the vault.</p>
+        <form id="auth-form" class="card reveal">
+          <div class="tabs" role="tablist" aria-label="Log in or sign up">
+            <button type="button" role="tab" data-mode="login" aria-selected="true">Enter</button>
+            <button type="button" role="tab" data-mode="register" aria-selected="false">Enlist</button>
           </div>
+          <label>
+            Handle
+            <input id="username" autocomplete="username" required minlength="3" maxlength="24" pattern="[A-Za-z0-9_\-]+" title="3-24 letters, digits, - or _" spellcheck="false" autocapitalize="off" />
+          </label>
+          <label>
+            Passphrase
+            <input id="password" type="password" autocomplete="current-password" required minlength="8" maxlength="128" />
+          </label>
+          <p id="form-error" class="form-error" role="alert"></p>
+          <button id="auth-submit" class="primary" type="submit">Enter the vault</button>
+        </form>
+        <p class="fineprint reveal">GDG VIT Chennai · prompt-injection CTF</p>
+      </section>
+
+      <section id="console" class="console" aria-label="Chat with the Vault Keeper" hidden>
+        <div id="log" class="log" role="log" aria-live="polite"></div>
+        <div id="chips" class="chips">
+          <button type="button">What is this place?</button>
+          <button type="button">What are you guarding?</button>
+          <button type="button">I'm stuck. Any hint?</button>
         </div>
-      </main>
+        <form id="composer" class="composer">
+          <label class="sr-only" for="prompt">Message the Keeper</label>
+          <textarea id="prompt" rows="1" maxlength="2000" placeholder="Speak to the Keeper…"></textarea>
+          <span id="count" class="count" aria-hidden="true">0/2000</span>
+          <button id="send" class="send" type="submit" aria-label="Send">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 7-7 7 7" /><path d="M12 19V5" /></svg>
+          </button>
+        </form>
+      </section>
+    </main>
+
+    <div id="breach" class="breach" role="dialog" aria-modal="true" aria-labelledby="breach-title" hidden>
+      <h2 id="breach-title" aria-label="Vault breached"><span class="split" aria-hidden="true">VAULT BREACHED</span></h2>
+      <p id="breach-flag" class="breach-flag"></p>
+      <p id="breach-who" class="breach-who"></p>
+      <button id="breach-close" class="primary" type="button">Keep talking</button>
     </div>
 
-    <!-- Vite processes this as the TypeScript entry point -->
+    <div id="toast" class="toast" role="status" hidden></div>
+
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

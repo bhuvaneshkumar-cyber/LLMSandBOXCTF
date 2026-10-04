@@ -1,24 +1,11 @@
 import { defineConfig } from "vite";
 
 export default defineConfig({
-  root: ".",
   server: {
-    port: 5173,
     open: true,
-    // Proxy API calls to the FastAPI backend during development.
-    // This makes ALL fetch("/api/v1/...") calls same-origin, so CORS
-    // preflight requests never reach the backend at all.
-    proxy: {
-      "/api": {
-        target: "http://localhost:8000",
-        changeOrigin: true,
-        // Optional: uncomment to strip /api prefix if backend routes change
-        // rewrite: (path) => path.replace(/^\/api/, ""),
-      },
-    },
+    // Dev only: keeps fetch("/api/...") same-origin by forwarding it to the FastAPI backend.
+    proxy: { "/api": "http://localhost:8000" },
   },
-  build: {
-    outDir: "dist",
-    emptyOutDir: true,
-  },
+  // The only big chunk is three.js (~140 kB gzip), already split off and loaded after the UI.
+  build: { chunkSizeWarningLimit: 600 },
 });

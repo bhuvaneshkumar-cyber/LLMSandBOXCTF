@@ -1,72 +1,110 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// main.ts — Application entry point. Wires up modules and event listeners.
+// main.ts — Entry point: the session flow, gluing the API, the UI and the 3D vault.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import "./styles.css";
-import {
-  initParticipant,
-  getParticipantId,
-  getParticipantToken,
-  setParticipantToken,
-} from "./participant";
-import { sendChat } from "./api";
-import {
-  setParticipantLabel,
-  appendMessage,
-  setLoading,
-  showSolvedBanner,
-  autoResizeTextarea,
-  getPromptValue,
-  clearPromptInput,
-} from "./ui";
+import { ApiError, api } from "./api";
+import { session } from "./participant";
+import type { ChatState } from "./types";
+import * as ui from "./ui";
+import type { Layout, Vault } from "./vault";
 
-// ── Initialise participant ────────────────────────────────────────────────────
+const idle = () => {};
+let vault: Vault = { frame: idle, thinking: idle, speak: idle, keystroke: idle, alarm: idle, breach: idle, seal: idle };
+let layout: Layout = "gate";
+let state: ChatState | null = null;
 
-const participantId = initParticipant();
-setParticipantLabel(participantId);
-
-// ── Event: auto-resize textarea while typing ──────────────────────────────────
-
-const promptInput = document.getElementById(
-  "prompt-input"
-) as HTMLTextAreaElement;
-promptInput.addEventListener("input", autoResizeTextarea);
-
-// ── Event: Enter to submit (Shift+Enter inserts newline) ─────────────────────
-
-promptInput.addEventListener("keydown", (e: KeyboardEvent) => {
-  if (e.key === "Enter" && !e.shiftKey) {
-    e.preventDefault();
-    document.getElementById("chat-form")?.dispatchEvent(new Event("submit"));
-  }
+// three.js is the heaviest chunk, so it loads after the UI is usable; until then scene calls are no-ops.
+import("./vault").then(({ createVault }) => {
+  const scene = createVault(document.querySelector("#vault") as HTMLCanvasElement);
+  if (!scene) return document.body.classList.add("no-webgl");
+  vault = scene;
+  vault.frame(layout);
+  if (state?.solved) vault.breach(true);
 });
 
-// ── Event: form submit → call API ─────────────────────────────────────────────
+const expired = (error: unknown) => error instanceof ApiError && error.status === 401;
 
-const chatForm = document.getElementById("chat-form") as HTMLFormElement;
+function showGate(message = ""): void {
+  session.clear();
+  state = null;
+  layout = "gate";
+  vault.seal();
+  vault.frame(layout);
+  ui.showGate(message);
+}
 
-chatForm.addEventListener("submit", async (e: Event) => {
-  e.preventDefault();
+function enter(next: ChatState): void {
+  state = next;
+  layout = "console";
+  ui.showConsole(next);
+  vault.frame(layout);
+  if (next.solved) vault.breach(true);
+}
 
-  const text = getPromptValue();
-  if (!text) return;
+function fail(error: unknown): void {
+  if (expired(error)) return showGate("Your session expired. Log in again.");
+  vault.alarm();
+  ui.toast(error);
+}
 
-  appendMessage("user", text);
-  clearPromptInput();
-  setLoading(true);
-
+async function refresh(): Promise<void> {
   try {
-    const result = await sendChat(getParticipantId(), text, getParticipantToken());
-    setParticipantToken(result.participant_token);
-    appendMessage("ai", result.response);
+    state = await api.state();
+    ui.setCharges(state.remaining, state.limit);
+  } catch (error) {
+    fail(error);
+  }
+}
 
-    if (result.solved) {
-      showSolvedBanner();
+async function send(text: string): Promise<void> {
+  if (!state) return;
+  const turn = ui.pendingTurn(text);
+  ui.setBusy(true);
+  vault.thinking(true);
+  try {
+    const result = await api.send(text);
+    vault.thinking(false);
+    vault.speak(ui.resolveTurn(turn, result.reply));
+    state.remaining = result.remaining;
+    ui.setCharges(result.remaining, state.limit);
+    if (result.solved && !state.solved) {
+      state.solved = true;
+      vault.breach();
+      ui.showBreach(result.reply, state.username);
     }
-  } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : "Unknown error.";
-    appendMessage("ai", `[System Error]: ${message}\nPlease try again.`);
+  } catch (error) {
+    vault.thinking(false);
+    ui.rejectTurn(turn);
+    ui.restorePrompt(text);
+    if (error instanceof ApiError && error.status === 429 && error.retryAfter) ui.recharge(error.retryAfter, refresh);
+    fail(error);
   } finally {
-    setLoading(false);
+    ui.setBusy(false);
+  }
+}
+
+ui.onAuth(async (mode, username, password) => {
+  session.set((await api[mode](username, password)).token);
+  const next = await api.state();
+  await ui.leaveGate();
+  enter(next);
+});
+ui.onSend(send);
+ui.onType(() => vault.keystroke());
+ui.onNewChat(async () => {
+  try {
+    await api.reset();
+    await ui.clearLog();
+    vault.speak(500);
+  } catch (error) {
+    fail(error);
   }
 });
+ui.onLeave(() => showGate());
+
+if (!session.token()) {
+  showGate();
+} else {
+  api.state().then(enter, (error: Error) => showGate(expired(error) ? "Your session expired. Log in again." : error.message));
+}

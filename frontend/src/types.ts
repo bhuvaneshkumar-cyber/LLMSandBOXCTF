@@ -1,20 +1,25 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// types.ts — Shared TypeScript interfaces matching the FastAPI schema.
+// types.ts — Shapes of the FastAPI responses (app/api/routes_chat.py).
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** Body sent to POST /api/v1/chat */
-export interface ChatRequest {
-  participant_id: string;
+export interface Turn {
   prompt: string;
-  provider_api_key?: string | null;
+  reply: string;
 }
 
-/** Response returned by POST /api/v1/chat */
-export interface ChatResponse {
-  response: string;
+/** GET /api/v1/chat — everything the console needs after login or a reload. */
+export interface ChatState {
+  username: string;
   solved: boolean;
-  participant_token: string;
+  remaining: number;
+  limit: number;
+  memory: number; // how many of the latest turns the Keeper can still see
+  turns: Turn[];
 }
 
-/** A single rendered message in the UI */
-export type MessageRole = "user" | "ai";
+/** POST /api/v1/chat */
+export interface Reply {
+  reply: string;
+  solved: boolean;
+  remaining: number;
+}
