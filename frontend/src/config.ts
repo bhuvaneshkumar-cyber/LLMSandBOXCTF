@@ -3,4 +3,4 @@
 // frontend in production, and the Vite dev server proxies /api in development.
 // ─────────────────────────────────────────────────────────────────────────────
 
-export const BASE_URL = "/api/v1";
+export const BASE_URL = "https://sandboxllm.onrender.com/api/v1"
